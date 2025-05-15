@@ -48,6 +48,38 @@ function l_lora_finetune() {
 
 full_finetune
 
+function continual_full_finetune_sun_stanford() {
+    fusion_bench \
+        --config-dir ${SCRIPT_DIR}/config \
+        fabric.devices=4 \
+        fabric.loggers.root_dir=outputs/${MODEL_SHORT_NAME}/continual_full_finetune \
+        fabric.loggers.name=TA8 \
+        method=classification/clip_continual_finetune \
+        method.num_steps=4000 \
+        method.batch_size=32 \
+        method.save_interval=2000 \
+        method.learning_rate=1e-5 \
+        method.shuffle_order=true \
+        modelpool=clip-finetune_sun397_stanford\
+        modelpool.base_model=${MODEL}
+}
+
+function continual_full_finetune_stanford_sun() {
+    fusion_bench \
+        --config-dir ${SCRIPT_DIR}/config \
+        fabric.devices=4 \
+        fabric.loggers.root_dir=outputs/${MODEL_SHORT_NAME}/continual_full_finetune \
+        fabric.loggers.name=TA8 \
+        method=classification/clip_continual_finetune \
+        method.num_steps=4000 \
+        method.batch_size=32 \
+        method.save_interval=2000 \
+        method.learning_rate=1e-5 \
+        method.shuffle_order=true \
+        modelpool=clip-finetune_stanford_sun\
+        modelpool.base_model=${MODEL}
+}
+
 
 function continual_full_finetune_8_tasks() {
     fusion_bench \
