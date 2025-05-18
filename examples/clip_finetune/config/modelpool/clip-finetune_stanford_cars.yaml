@@ -9,7 +9,7 @@ models:
     pretrained_model_name_or_path: ${...base_model}
 
 train_datasets:
-  sun3stanford_cars97:
+  stanford_cars97:
     _target_: datasets.load_dataset
     path: tanganke/stanford_cars
     split: train
