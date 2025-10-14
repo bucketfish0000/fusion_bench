@@ -9,7 +9,7 @@ MODEL_SHORT_NAME=ViT-B-16
 function lora_finetune() {
     fusion_bench \
         --config-dir ${SCRIPT_DIR}/config \
-        fabric.devices=8 \
+        fabric.devices=2 \
         method=classification/clip_finetune_lora_r16 \
         method.num_steps=4000 \
         method.batch_size=16 \
