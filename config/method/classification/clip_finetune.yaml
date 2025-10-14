@@ -13,7 +13,7 @@ state_dict_save_path: null
 # if `skip_training` is true, use with `state_dict_load_path` to skip training and only evaluate
 skip_training: false
 # === LoRA ===
-use_lora: false
+use_lora: true
 lora_config:
   r: 16
   lora_alpha: 32
