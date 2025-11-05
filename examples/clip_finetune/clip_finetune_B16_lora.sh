@@ -12,7 +12,7 @@ function lora_finetune() {
         fabric.devices=2 \
         method=classification/clip_finetune \
         method.num_steps=4000 \
-        method.batch_size=8 \
+        method.batch_size=16 \
         method.save_interval=2000 \
         method.learning_rate=1e-5 \
         modelpool=clip-finetune_${TASK} \
