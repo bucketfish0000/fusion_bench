@@ -59,6 +59,15 @@ class CLIPClassificationMixin(LightningFabricMixin):
 
     @property
     def clip_processor(self):
+        """
+        Get the CLIP processor, loading it from the model pool if necessary.
+
+        Returns:
+            CLIPProcessor: The CLIP processor for image and text preprocessing.
+
+        Raises:
+            AssertionError: If the model pool is not set.
+        """
         if self._clip_processor is None:
             assert self.modelpool is not None, "Model pool is not set"
             self._clip_processor = self.modelpool.load_processor()
@@ -125,6 +134,11 @@ class CLIPClassificationMixin(LightningFabricMixin):
             clip_model (Optional[CLIPModel]): The CLIP model to use. If not provided, a pretrained model is loaded from the model pool.
             task_names (Optional[List[str]]): A list of task names to set up the classification head for. If not provided, all models in the model pool will be used.
         """
+        # make sure the task names are equal across all processes
+        _task_names = self.fabric.broadcast(task_names, src=0)
+        if not self.fabric.is_global_zero and task_names != _task_names:
+            raise ValueError("The `task_names` must be the same across all processes.")
+
         self.whether_setup_zero_shot_classification_head = True
         # load clip model if not provided
         if clip_model is None:
@@ -147,7 +161,10 @@ class CLIPClassificationMixin(LightningFabricMixin):
         self.logit_scale_exp = self.fabric.to_device(self.logit_scale_exp)
 
         @cache_with_joblib()
-        def construct_classification_head(task: str):
+        def construct_classification_head(task: str, model_name: str):
+            log.info(
+                f"Constructing zero-shot classification head for task: {task} using model: {model_name}"
+            )
             nonlocal clip_classifier
 
             classnames, templates = get_classnames_and_templates(task)
@@ -163,7 +180,18 @@ class CLIPClassificationMixin(LightningFabricMixin):
         ):
             zeroshot_weights = None
             if self.fabric.is_global_zero:
-                zeroshot_weights = construct_classification_head(task)
+                if hasattr(clip_model, "config") and hasattr(
+                    clip_model.config, "_name_or_path"
+                ):
+                    model_name = clip_model.config._name_or_path
+                else:
+                    model_name = "unknown_model"
+                    log.warning(
+                        "CLIP model config does not have `_name_or_path` attribute. Using 'unknown_model' as model name."
+                    )
+                zeroshot_weights = construct_classification_head(
+                    task, model_name=model_name
+                )
 
             self.fabric.barrier()
             self.zeroshot_weights[task] = self.fabric.broadcast(zeroshot_weights, src=0)

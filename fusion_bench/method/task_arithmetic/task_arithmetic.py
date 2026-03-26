@@ -50,7 +50,7 @@ def task_arithmetic_merge(
         finetuned_models (List[nn.Module]): A list of fine-tuned models from which task vectors will be calculated.
         scaling_factor (float): A factor by which the task vectors will be scaled before merging.
         inplace (bool, optional): If True, the pre-trained model will be modified in place.
-                                  If False, a copy of the pre-trained model will be modified. Defaults to True.
+            If False, a copy of the pre-trained model will be modified. Defaults to True.
 
     Returns:
         nn.Module: The pre-trained model with the merged task vectors.
@@ -101,12 +101,17 @@ class TaskArithmeticAlgorithm(
         scaling_factor (int): The factor by which the task vectors will be scaled before merging.
     """
 
-    def __init__(self, scaling_factor: int, **kwargs):
+    def __init__(
+        self,
+        scaling_factor: float,
+        inplace: bool = True,
+        **kwargs,
+    ):
         """
         Initializes the TaskArithmeticAlgorithm with the given scaling factor.
 
         Args:
-            scaling_factor (int): The factor by which the task vectors will be scaled before merging.
+            scaling_factor (float): The factor by which the task vectors will be scaled before merging.
         """
         super().__init__(**kwargs)
 
@@ -149,7 +154,10 @@ class TaskArithmeticAlgorithm(
                     )
         with self.profile("merge weights"):
             # scale the task vector
-            task_vector = state_dict_mul(task_vector, self.config.scaling_factor)
+            # here we keep the dtype when the elements of value are all zeros to avoid dtype mismatch
+            task_vector = state_dict_mul(
+                task_vector, self.config.scaling_factor, keep_dtype_when_zero=True
+            )
             # add the task vector to the pretrained model
             state_dict = state_dict_add(pretrained_model.state_dict(), task_vector)
 
@@ -157,7 +165,7 @@ class TaskArithmeticAlgorithm(
 
         # apply state dict to model
         if isinstance(pretrained_model, nn.Module):
-            model = pretrained_model
+            model = pretrained_model if self.inplace else deepcopy(pretrained_model)
             model.load_state_dict(state_dict)
         elif isinstance(pretrained_model, LazyStateDict):
             model = deepcopy(pretrained_model.meta_module)

@@ -4,11 +4,13 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2406.03280-b31b1b.svg)](http://arxiv.org/abs/2406.03280)
 [![GitHub License](https://img.shields.io/github/license/tanganke/fusion_bench)](https://github.com/tanganke/fusion_bench/blob/main/LICENSE)
-[![PyPI - Version](https://img.shields.io/pypi/v/fusion-bench)](https://pypi.org/project/fusion-bench/)
-[![Downloads](https://static.pepy.tech/badge/fusion-bench/month)](https://pepy.tech/project/fusion-bench)
 [![Static Badge](https://img.shields.io/badge/doc-mkdocs-blue)](https://tanganke.github.io/fusion_bench/)
 [![Static Badge](https://img.shields.io/badge/code%20style-black-black)](https://github.com/psf/black)
 [![Static Badge](https://img.shields.io/badge/code%20style-yamlfmt-black)](https://github.com/google/yamlfmt)
+
+[![CodeFactor](https://www.codefactor.io/repository/github/tanganke/fusion_bench/badge/main)](https://www.codefactor.io/repository/github/tanganke/fusion_bench/overview/main)
+[![PyPI - Version](https://img.shields.io/pypi/v/fusion-bench)](https://pypi.org/project/fusion-bench/)
+[![Downloads](https://static.pepy.tech/badge/fusion-bench/month)](https://pepy.tech/project/fusion-bench)
 
 </div>
 
@@ -18,6 +20,8 @@
 ## Overview
 
 FusionBench is a benchmark suite designed to evaluate the performance of various deep model fusion techniques. It aims to provide a comprehensive comparison of different methods on a variety of datasets and tasks.
+
+## :newspaper: News and Related
 
 Projects based on FusionBench and news from the community (descending order of date. If you have any work based on FusionBench, please feel free to let us know, we are willing to add it to the list. :partying_face:):
 
@@ -42,7 +46,13 @@ Model merging has emerged as a promising approach for multi-task learning (MTL),
 </details>
 
 <details>
-  <summary>Anke Tang, et al. Merging Models on the Fly Without Retraining: A Sequential Approach to Scalable Continual Model Merging. Jan 2025. https://arxiv.org/pdf/2501.09522</summary>
+  <summary>Enneng Yang, et al. Continual Model Merging without Data: Dual Projections for Balancing Stability and Plasticity. NeurIPS 2025. https://github.com/EnnengYang/DOP</summary>
+
+Model merging integrates multiple expert models with diverse capabilities into a unified framework, facilitating collaborative learning. However, most existing methods assume simultaneous access to all models, which is often impractical in real-world scenarios where models are received sequentially. While some studies have investigated continual model merging (CMM)--which involves sequentially merging multiple models--the challenge of balancing prior knowledge (stability) and incorporating new tasks (plasticity) remains unresolved. This paper, for the first time, formally defines the stability and plasticity of CMM from the perspective of orthogonal projection. Subsequently, we analyze the relationships among the spaces spanned by task data, historical gradients, and accumulated gradients. Building on this, we propose a data-free Dual Orthogonal Projection (DOP) method, which eliminates data dependence and mitigates interference between the merged model and models for old and new tasks by projecting their parameter differences onto their respective approximate data spaces. Finally, to solve potential conflicts between stability and plasticity, we reformulate DOP as a multi-objective optimization problem and employ a multi-gradient descent algorithm to obtain a Pareto-optimal solution. Extensive experiments across multiple architectures and task configurations validate that our approach significantly outperforms state-of-the-art CMM methods.
+</details>
+
+<details>
+  <summary>Anke Tang, et al. Merging Models on the Fly Without Retraining: A Sequential Approach to Scalable Continual Model Merging. NeurIPS 2025. Jan 2025. https://arxiv.org/pdf/2501.09522</summary>
 
 Deep model merging represents an emerging research direction that combines multiple fine-tuned models to harness their specialized capabilities across different tasks and domains. Current model merging techniques focus on merging all available models simultaneously, with weight interpolation-based methods being the predominant approaches. However, these conventional approaches are not well-suited for scenarios where models become available sequentially, and they often suffer from high memory requirements and potential interference between tasks. In this study, we propose a training-free projection-based continual merging method that processes models sequentially through orthogonal projections of weight matrices and adaptive scaling mechanisms. Our method operates by projecting new parameter updates onto subspaces orthogonal to existing merged parameter updates while using an adaptive scaling mechanism to maintain stable parameter distances, enabling efficient sequential integration of task-specific knowledge. Our approach maintains constant memory complexity to the number of models, minimizes interference between tasks through orthogonal projections, and retains the performance of previously merged models through adaptive task vector scaling. Extensive experiments on CLIP-ViT models demonstrate that our method achieves a 5-8% average accuracy improvement while maintaining robust performance in different task orderings.
 </details>
@@ -159,15 +169,57 @@ The CLI's design allows for easy extension to new fusion methods, model types, a
 
 Read the [CLI documentation](https://tanganke.github.io/fusion_bench/cli/fusion_bench/) for more information.
 
+## The FusionBench Workflow
+
+FusionBench follows a three-component architecture to perform model fusion experiments:
+
+```mermaid
+graph LR
+    CLI[fusion_bench CLI] --> Hydra[Hydra Config]
+    Hydra --> Program[Program]
+    
+    Program --> MP[ModelPool<br/>Manages Models<br/>& Datasets]
+    Program --> Method[Method<br/>Fusion Algorithm]
+    Program --> TP[TaskPool<br/>Evaluation Tasks]
+    
+    MP --> Method
+    Method --> Merged[Merged Model]
+    Merged --> TP
+    TP --> Report[Evaluation Report]
+    
+    style CLI fill:#e1f5e1
+    style Hydra fill:#f0e1ff
+    style Method fill:#ffe1f0
+    style Merged fill:#fff4e1
+    style Report fill:#e1f0ff
+```
+
+**Key Components:**
+
+1. **CLI**: Entry point using Hydra for configuration management
+2. **Program**: Orchestrates the fusion workflow (e.g., `FabricModelFusionProgram`)
+3. **ModelPool**: Manages task-specific models and their datasets
+4. **Method**: Implements the fusion algorithm (e.g., Simple Average, Task Arithmetic, AdaMerging)
+5. **TaskPool**: Evaluates the merged model on benchmark tasks
+
+**Workflow Steps:**
+
+1. User runs `fusion_bench` with config overrides
+2. Hydra loads YAML configs for method, modelpool, and taskpool
+3. Program instantiates all three components
+4. Method executes fusion algorithm on ModelPool
+5. TaskPool evaluates the merged model
+6. Results are saved and reported
+
 ## Implement your own model fusion algorithm
 
 First, create a new Python file for the algorithm in the `fusion_bench/method` directory.
 Following the naming convention, the file should be named `{method_name_or_class}/{variant}.py`.
 
 ```python
-from fusion_bench import BaseModelFusionAlgorithm, BaseModelPool
+from fusion_bench import BaseAlgorithm, BaseModelPool
 
-class DerivedModelFusionAlgorithm(BaseModelFusionAlgorithm):
+class DerivedModelFusionAlgorithm(BaseAlgorithm):
     """
     An example of a derived model fusion algorithm.
     """
@@ -175,7 +227,7 @@ class DerivedModelFusionAlgorithm(BaseModelFusionAlgorithm):
     # _config_mapping maps the attribution to the corresponding key in the configuration file.
     # this is optional and can be used to serialize the object to a configuration file.
     # `self.config.hyperparam_1` will be mapped to the attribute `hyperparam_attr_1`.
-    _config_mapping = BaseModelFusionAlgorithm._config_mapping | {
+    _config_mapping = BaseAlgorithm._config_mapping | {
         "hyperparam_attr_1": "hyperparam_1",
         "hyperparam_attr_2": "hyperparam_2",
     }
@@ -226,11 +278,24 @@ Click on [<kbd>Use this template</kbd>](https://github.com/fusion-bench/fusion-b
 
 </div>
 
-### FusionBench Command Generator WebUI (for v0.1.x)
+### FusionBench Command Generator WebUI
 
-FusionBench Command Generator is a user-friendly web interface for generating FusionBench commands based on configuration files.
-It provides an interactive way to select and customize FusionBench configurations, making it easier to run experiments with different settings.
-[Read more here](https://tanganke.github.io/fusion_bench/cli/fusion_bench_webui/).
+> [!NOTE]
+> Requires `gradio` package. Install with `pip install gradio`.
+
+For users who prefer a graphical interface, FusionBench provides an interactive web UI for generating commands:
+
+```bash
+fusion_bench_webui
+```
+
+This launches a browser-based interface where you can:
+
+- Select root configurations and components through dropdowns
+- Adjust hyperparameters interactively
+- View real-time YAML configuration updates
+
+The WebUI is particularly useful for exploring available configurations, experimenting with different parameter combinations, and learning the FusionBench configuration structure. [Learn more about the WebUI](https://tanganke.github.io/fusion_bench/cli/fusion_bench_webui/).
 
 ![FusionBench Command Generator Web Interface](docs/cli/images/fusion_bench_webui.png)
 
@@ -239,14 +304,16 @@ It provides an interactive way to select and customize FusionBench configuration
 If you find this benchmark useful, please consider citing our work:
 
 ```bibtex
-@article{tang2024fusionbench,
+@article{tang2025fusionbench,
   title={Fusionbench: A comprehensive benchmark of deep model fusion},
-  author={Tang, Anke and Shen, Li and Luo, Yong and Hu, Han and Du, Bo and Tao, Dacheng},
-  journal={arXiv preprint arXiv:2406.03280},
-  year={2024}
+  author={Tang, Anke and Shen, Li and Luo, Yong and Yang, Enneng and Hu, Han and Zhang, Lefei and Du, Bo and Tao, Dacheng},
+  journal={Journal of Machine Learning Research},
+  year={2025}
 }
 ```
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=tanganke/fusion_bench&type=Date)](https://www.star-history.com/#tanganke/fusion_bench&Date)
+
+![Alt](https://repobeats.axiom.co/api/embed/83f1f046562e4a4787bdd6ed1190856f9f30bd9f.svg "Repobeats analytics image")

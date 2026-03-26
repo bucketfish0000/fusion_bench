@@ -1,15 +1,28 @@
 from collections import OrderedDict
 from numbers import Number
-from typing import Callable, Dict, List, Literal, Optional, Union, cast
+from typing import (
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Union,
+    cast,
+)
 
 import torch
 from torch import Tensor
 from tqdm.auto import tqdm
 
+from fusion_bench.utils.type import TorchModelType
+
 from .type import BoolStateDictType, StateDictType
 
 __all__ = [
     "ArithmeticStateDict",
+    "load_state_dict_with_prefix",
     "state_dicts_check_keys",
     "state_dict_to_device",
     "num_params_of_state_dict",
@@ -459,6 +472,118 @@ class ArithmeticStateDict(OrderedDict):
         return cls(result_dict)
 
 
+class LazyStateDictExpr(Mapping[str, torch.Tensor]):
+    """
+    A lazy, key-wise expression over state_dict-like objects.
+    """
+
+    # ---- core Mapping API ----
+    def __getitem__(self, key: str) -> torch.Tensor:
+        raise NotImplementedError
+
+    def __iter__(self) -> Iterator[str]:
+        raise NotImplementedError
+
+    def __len__(self) -> int:
+        raise NotImplementedError
+
+    # ---- arithmetic (build graph only) ----
+    def __add__(self, other):
+        return BinaryOp(torch.add, self, ensure_expr(other))
+
+    def __sub__(self, other):
+        return BinaryOp(torch.sub, self, ensure_expr(other))
+
+    def __mul__(self, scalar):
+        return UnaryOp(lambda x: x * scalar, self)
+
+    def __rmul__(self, scalar):
+        return self.__mul__(scalar)
+
+    def __truediv__(self, scalar):
+        return UnaryOp(lambda x: x / scalar, self)
+
+    # ---- eager escape hatch ----
+    def materialize(
+        self, device=None, dtype=None, non_blocking=False, copy=False
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Eagerly evaluate into an OrderedDict.
+        """
+        out = {}
+        for k in self:
+            v = self[k]
+            out[k] = v.to(
+                device=device,
+                dtype=dtype,
+                non_blocking=non_blocking,
+                copy=copy,
+            )
+        return out
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(lazy)"
+
+
+class StateDictLeaf(LazyStateDictExpr):
+    def __init__(self, state_dict: Mapping[str, torch.Tensor]):
+        self._sd = state_dict
+
+    def __getitem__(self, key: str) -> torch.Tensor:
+        return self._sd[key]
+
+    def __iter__(self):
+        return iter(self._sd)
+
+    def __len__(self):
+        return len(self._sd)
+
+
+class UnaryOp(LazyStateDictExpr):
+    def __init__(self, op: Callable[[torch.Tensor], torch.Tensor], child):
+        self.op = op
+        self.child = child
+
+    def __getitem__(self, key: str):
+        return self.op(self.child[key])
+
+    def __iter__(self):
+        return iter(self.child)
+
+    def __len__(self):
+        return len(self.child)
+
+
+class BinaryOp(LazyStateDictExpr):
+    def __init__(
+        self,
+        op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        left,
+        right,
+    ):
+        self.op = op
+        self.left = left
+        self.right = right
+
+    def __getitem__(self, key: str):
+        return self.op(self.left[key], self.right[key])
+
+    def __iter__(self):
+        # assume key sets are aligned
+        return iter(self.left)
+
+    def __len__(self):
+        return len(self.left)
+
+
+def ensure_expr(x):
+    if isinstance(x, LazyStateDictExpr):
+        return x
+    if isinstance(x, Mapping):
+        return StateDictLeaf(x)
+    raise TypeError(f"Unsupported operand type: {type(x)}")
+
+
 def _validate_state_dict_list_not_empty(state_dicts: List[StateDictType]) -> None:
     """
     Validate that the list of state dicts is not empty and contains valid state dicts.
@@ -644,6 +769,48 @@ def _validate_list_lengths_equal(
         except (TypeError, AttributeError):
             # If we can't check numeric values, skip this validation
             pass
+
+
+def load_state_dict_with_prefix(
+    model: TorchModelType,
+    state_dict: StateDictType,
+    strict: bool = True,
+    assign: bool = False,
+    key_prefix: str = "model.",
+    operation: Literal["add", "remove"] = "remove",
+) -> TorchModelType:
+    """
+    Load a state dict into a model, adding or removing a prefix from the keys.
+
+    This is useful when loading state dicts saved with DataParallel, pytorch lightning or similar wrappers.
+
+    Args:
+        model: The model to load the state dict into.
+        state_dict: The state dictionary to load.
+        key_prefix: The prefix to add or remove from the keys.
+        operation: 'add' to add the prefix, 'remove' to remove it.
+
+    Returns:
+        The model with the loaded state dict.
+    """
+    if operation not in ("add", "remove"):
+        raise ValueError("operation must be either 'add' or 'remove'")
+
+    modified_state_dict = OrderedDict()
+    for key, value in state_dict.items():
+        if operation == "add":
+            new_key = f"{key_prefix}{key}"
+        else:  # operation == "remove"
+            if key.startswith(key_prefix):
+                new_key = key[len(key_prefix) :]
+            else:
+                raise ValueError(
+                    f"Key '{key}' does not start with prefix '{key_prefix}'"
+                )
+        modified_state_dict[new_key] = value
+
+    model.load_state_dict(modified_state_dict, strict=strict, assign=assign)
+    return model
 
 
 def state_dict_to_device(
@@ -851,22 +1018,48 @@ def state_dict_add_scalar(state_dict: StateDictType, scalar: Number) -> StateDic
     return OrderedDict((key, tensor + scalar) for key, tensor in state_dict.items())
 
 
-def state_dict_mul(state_dict: StateDictType, scalar: float) -> StateDictType:
+def state_dict_mul(
+    state_dict: StateDictType,
+    scalar: float,
+    *,
+    keep_dtype_when_zero: bool = True,
+    show_pbar: bool = False,
+) -> StateDictType:
     """
     Multiply all parameters in a state dict by a scalar.
 
     Args:
         state_dict: The state dict to multiply.
-        scalar: The scalar value to multiply each parameter by.
+        scalar (float): The scalar value to multiply each parameter by.
+        keep_dtype_when_zero (bool): Whether to keep the original data type of the tensors if either the tensor is all zeros or the scalar is zero.
+        show_pbar (bool): Whether to show a progress bar during computation.
 
     Returns:
         A new state dict with each parameter multiplied by the scalar.
     """
-    return OrderedDict((key, scalar * tensor) for key, tensor in state_dict.items())
+    new_state_dict = OrderedDict()
+    for key, tensor in (
+        state_dict.items()
+        if not show_pbar
+        else tqdm(state_dict.items(), desc="Multiplying state dict")
+    ):
+        if (
+            keep_dtype_when_zero
+            and not tensor.is_floating_point()  # when tensor is not floating point, multiplication by 0 keeps dtype
+            and (scalar == 0 or torch.all(tensor == 0))
+        ):
+            new_state_dict[key] = tensor.clone()
+        else:
+            new_state_dict[key] = scalar * tensor
+    return new_state_dict
 
 
 def state_dict_div(
-    state_dict: StateDictType, scalar: float, show_pbar: bool = False
+    state_dict: StateDictType,
+    scalar: float,
+    *,
+    keep_dtype_when_zero: bool = True,
+    show_pbar: bool = False,
 ) -> StateDictType:
     """
     Divide all parameters in a state dict by a scalar.
@@ -874,6 +1067,7 @@ def state_dict_div(
     Args:
         state_dict: The state dict to divide.
         scalar: The scalar value to divide each parameter by.
+        keep_dtype_when_zero: Whether to keep the original data type of the tensors if the tensor is all zeros.
         show_pbar: Whether to show a progress bar during computation.
 
     Returns:
@@ -885,12 +1079,21 @@ def state_dict_div(
     if scalar == 0:
         raise ZeroDivisionError("Cannot divide state dict by zero")
 
-    keys_iter = (
-        tqdm(state_dict.keys(), desc="Dividing state dict")
-        if show_pbar
-        else state_dict.keys()
-    )
-    return OrderedDict((key, state_dict[key] / scalar) for key in keys_iter)
+    new_state_dict = OrderedDict()
+    for key, tensor in (
+        state_dict.items()
+        if not show_pbar
+        else tqdm(state_dict.items(), desc="Dividing state dict")
+    ):
+        if (
+            keep_dtype_when_zero
+            and not tensor.is_floating_point()  # when tensor is not floating point, division by any scalar keeps dtype
+            and torch.all(tensor == 0)  # only check tensor for zero
+        ):
+            new_state_dict[key] = tensor.clone()
+        else:
+            new_state_dict[key] = tensor / scalar
+    return new_state_dict
 
 
 def state_dict_power(state_dict: StateDictType, p: float) -> StateDictType:
@@ -1147,3 +1350,63 @@ def state_dict_hadamard_product(a: StateDictType, b: StateDictType) -> StateDict
     """
     _validate_state_dict_same_keys([a, b])
     return OrderedDict((key, a[key] * b[key]) for key in a)
+
+
+def state_dict_max(
+    state_dicts: List[StateDictType],
+) -> StateDictType:
+    """
+    Compute the element-wise maximum across multiple state dicts.
+
+    Args:
+        state_dicts: List of state dicts to compute the maximum from.
+
+    Returns:
+        A state dict containing the element-wise maximums.
+    """
+    _validate_state_dict_list_not_empty(state_dicts)
+    _validate_state_dict_same_keys(state_dicts)
+
+    max_state_dict = OrderedDict()
+
+    for key in state_dicts[0]:
+        # Initialize with the first tensor
+        max_tensor = state_dicts[0][key].clone()
+
+        # Compute element-wise maximum
+        for state_dict in state_dicts[1:]:
+            max_tensor = torch.max(max_tensor, state_dict[key])
+
+        max_state_dict[key] = max_tensor
+
+    return max_state_dict
+
+
+def state_dict_max_abs(
+    state_dicts: List[StateDictType],
+) -> StateDictType:
+    """
+    Compute the element-wise maximum absolute value across multiple state dicts.
+
+    Args:
+        state_dicts: List of state dicts to compute the maximum absolute values from.
+
+    Returns:
+        A state dict containing the element-wise maximum absolute values.
+    """
+    _validate_state_dict_list_not_empty(state_dicts)
+    _validate_state_dict_same_keys(state_dicts)
+
+    max_abs_state_dict = OrderedDict()
+
+    for key in state_dicts[0]:
+        # Initialize with the absolute values of the first tensor
+        max_abs_tensor = state_dicts[0][key].abs()
+
+        # Compute element-wise maximum absolute value
+        for state_dict in state_dicts[1:]:
+            max_abs_tensor = torch.max(max_abs_tensor, state_dict[key].abs())
+
+        max_abs_state_dict[key] = max_abs_tensor
+
+    return max_abs_state_dict

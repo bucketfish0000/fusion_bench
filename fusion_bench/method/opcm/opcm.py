@@ -16,22 +16,23 @@ from transformers import CLIPVisionModel
 
 from fusion_bench import BaseAlgorithm, BaseModelPool
 from fusion_bench.mixins import LightningFabricMixin, SimpleProfilerMixin
+from fusion_bench.models.utils import is_leaf_module
 from fusion_bench.taskpool import CLIPVisionModelTaskPool
 from fusion_bench.utils import instantiate
 from fusion_bench.utils.json import load_from_json, save_to_json
 from fusion_bench.utils.parameters import state_dict_to_vector
 from fusion_bench.utils.state_dict_arithmetic import state_dict_sub
 
-from .utils import frobenius_inner_product, get_task_vector_norm, is_leaf_module, svd
+from .utils import frobenius_inner_product, get_task_vector_norm, svd
 
 if TYPE_CHECKING:
     from torch.utils.tensorboard import SummaryWriter
 
 
 class OPCMForCLIP(
-    BaseAlgorithm,
     LightningFabricMixin,
     SimpleProfilerMixin,
+    BaseAlgorithm,
 ):
     def __init__(
         self,
@@ -219,6 +220,9 @@ class OPCMForCLIP(
         return merged_model
 
     def save_merged_model(self, merged_model: CLIPVisionModel, step: int):
+        if self.log_dir is None:
+            print("Log dir is None, skip saving merged model.")
+            return
         os.makedirs(Path(self.log_dir) / "checkpoints", exist_ok=True)
         merged_model.save_pretrained(
             Path(self.log_dir) / "checkpoints" / f"merged_model_{step}"

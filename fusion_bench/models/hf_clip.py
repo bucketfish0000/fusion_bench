@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Callable, Iterable, List  # noqa: F401
+from typing import TYPE_CHECKING, Callable, Iterable, List, Optional  # noqa: F401
 
 import torch
 from torch import Tensor, nn
@@ -39,7 +39,6 @@ class HFCLIPClassifier(nn.Module):
         self,
         clip_model: CLIPModel,
         processor: CLIPProcessor,
-        extra_module=None,
     ):
         """
         Initialize the HFCLIPClassifier.
@@ -63,17 +62,35 @@ class HFCLIPClassifier(nn.Module):
             persistent=False,
         )
 
-        self.extra_module = extra_module
+    # NOTE:
+    # The property setters seems not to work properly with `nn.Module` attributes.
+    # So avoid using them in practice.
+    # To set the text or vision model, directly access the attributes.
+    # For example:
+    #    classifier.clip_model.text_model = new_text_model
+    # or
+    #    classifier.clip_model.vision_model = new_vision_model
+    # reference: https://github.com/pytorch/pytorch/issues/52664
 
     @property
     def text_model(self):
         """Get the text model component of CLIP."""
         return self.clip_model.text_model
 
+    @text_model.setter
+    def text_model(self, model: nn.Module):
+        """Set the text model component of CLIP."""
+        self.clip_model.text_model = model
+
     @property
     def vision_model(self):
         """Get the vision model component of CLIP."""
         return self.clip_model.vision_model
+
+    @vision_model.setter
+    def vision_model(self, model: nn.Module):
+        """Set the vision model component of CLIP."""
+        self.clip_model.vision_model = model
 
     def set_classification_task(
         self,
@@ -123,9 +140,9 @@ class HFCLIPClassifier(nn.Module):
     def forward(
         self,
         images: Tensor,
-        return_image_embeds=False,
-        return_dict=False,
-        task_name=None,
+        return_image_embeds: bool = False,
+        return_dict: bool = False,
+        task_name: Optional[str] = None,
     ):
         """
         Perform forward pass for zero-shot image classification.

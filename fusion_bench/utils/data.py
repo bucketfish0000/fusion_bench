@@ -7,6 +7,8 @@ import torch
 import torch.utils.data
 from torch.utils.data import DataLoader, Dataset
 
+from fusion_bench.utils.validation import ValidationError, validate_file_exists
+
 
 class InfiniteDataLoader:
     """
@@ -18,23 +20,105 @@ class InfiniteDataLoader:
 
     Attributes:
         data_loader (DataLoader): The DataLoader to wrap.
-        data_iter (iterator): An iterator over the DataLoader.
+        _data_iter (iterator): An iterator over the DataLoader.
+        _iteration_count (int): Number of complete iterations through the dataset.
+
+    Example:
+        >>> train_loader = DataLoader(dataset, batch_size=32)
+        >>> infinite_loader = InfiniteDataLoader(train_loader)
+        >>> for i, batch in enumerate(infinite_loader):
+        ...     if i >= 1000:  # Train for 1000 steps
+        ...         break
+        ...     train_step(batch)
     """
 
-    def __init__(self, data_loader: DataLoader):
+    def __init__(self, data_loader: DataLoader, max_retries: int = 1):
+        """
+        Initialize the InfiniteDataLoader.
+
+        Args:
+            data_loader: The DataLoader to wrap.
+            max_retries: Maximum number of retry attempts when resetting the data loader (default: 1).
+
+        Raises:
+            ValidationError: If data_loader is None or not a DataLoader instance.
+        """
+        if data_loader is None:
+            raise ValidationError(
+                "data_loader cannot be None", field="data_loader", value=data_loader
+            )
+
         self.data_loader = data_loader
-        self.data_iter = iter(data_loader)
+        self.max_retries = max_retries
+        self._data_iter = iter(data_loader)
+        self._iteration_count = 0
 
     def __iter__(self):
+        """Reset the iterator to the beginning."""
+        self._data_iter = iter(self.data_loader)
+        self._iteration_count = 0
         return self
 
     def __next__(self):
-        try:
-            data = next(self.data_iter)
-        except StopIteration:
-            self.data_iter = iter(self.data_loader)  # Reset the data loader
-            data = next(self.data_iter)
-        return data
+        """
+        Get the next batch, resetting to the beginning when the dataset is exhausted.
+
+        Returns:
+            The next batch from the data loader.
+
+        Raises:
+            RuntimeError: If the data loader consistently fails to produce data.
+        """
+        last_exception = None
+        for attempt in range(self.max_retries):
+            try:
+                data = next(self._data_iter)
+                return data
+            except StopIteration:
+                # Dataset exhausted or dataloader is empty, reset to beginning
+                self._iteration_count += 1
+                try:
+                    self._data_iter = iter(self.data_loader)
+                    data = next(self._data_iter)
+                    return data
+                except Exception as e:
+                    last_exception = e
+                    continue
+            except Exception as e:
+                # Handle other potential errors from the data loader
+                raise RuntimeError(
+                    f"Error retrieving data from data loader: [{type(e).__name__}]{e}"
+                ) from e
+
+        # If we get here, all attempts failed
+        raise RuntimeError(
+            f"Failed to retrieve data from data loader after {self.max_retries} attempts. "
+            f"Last error: [{type(last_exception).__name__}]{last_exception}. "
+            + (
+                f"The data loader may be empty."
+                if isinstance(last_exception, StopIteration)
+                else ""
+            )
+        ) from last_exception
+
+    def reset(self):
+        """Manually reset the iterator to the beginning of the dataset."""
+        self._data_iter = iter(self.data_loader)
+        self._iteration_count = 0
+
+    @property
+    def iteration_count(self) -> int:
+        """Get the number of complete iterations through the dataset."""
+        return self._iteration_count
+
+    def __len__(self) -> int:
+        """
+        Return the length of the underlying data loader.
+
+        Returns:
+            The number of batches in one complete iteration.
+        """
+        return len(self.data_loader)
 
 
 def load_tensor_from_file(
@@ -50,7 +134,14 @@ def load_tensor_from_file(
 
     Returns:
         torch.Tensor: The tensor loaded from the file.
+
+    Raises:
+        ValidationError: If the file doesn't exist
+        ValueError: If the file format is unsupported
     """
+    # Validate file exists
+    validate_file_exists(file_path)
+
     if file_path.endswith(".np"):
         tensor = torch.from_numpy(np.load(file_path)).detach_()
     if file_path.endswith((".pt", ".pth")):

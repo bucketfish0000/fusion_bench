@@ -1,14 +1,21 @@
 import logging
 from copy import deepcopy
-from typing import Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf, UnsupportedValueType
 from torch import nn
 from torch.utils.data import Dataset
 
+from fusion_bench import StateDictType, TorchModelType
 from fusion_bench.mixins import BaseYAMLSerializable, HydraConfigMixin
-from fusion_bench.utils import instantiate, timeit_context
+from fusion_bench.utils import (
+    ValidationError,
+    instantiate,
+    state_dict_sub,
+    timeit_context,
+    validate_model_name,
+)
 
 __all__ = ["BaseModelPool"]
 
@@ -51,12 +58,49 @@ class BaseModelPool(
         **kwargs,
     ):
         if isinstance(models, List):
+            log.debug(
+                "Initializing BaseModelPool with a list of models. "
+                "Converting to a dictionary with integer string keys."
+            )
             models = {str(model_idx): model for model_idx, model in enumerate(models)}
+
+        if isinstance(models, dict):
+            try:  # try to convert to DictConfig
+                models = OmegaConf.create(models)
+            except UnsupportedValueType:
+                pass
+
+        if not models:
+            log.warning("Initialized BaseModelPool with empty models dictionary.")
+        else:
+            # Validate model names
+            for model_name in models.keys():
+                try:
+                    validate_model_name(model_name, allow_special=True)
+                except ValidationError as e:
+                    log.warning(f"Invalid model name '{model_name}': {e}")
+
         self._models = models
         self._train_datasets = train_datasets
         self._val_datasets = val_datasets
         self._test_datasets = test_datasets
         super().__init__(**kwargs)
+
+    @property
+    def has_instance_models(self) -> bool:
+        """
+        Check if the model pool contains any pre-instantiated models.
+
+        Attention:
+            Some algorithms may modify the models in-place if they are pre-instantiated.
+
+        Returns:
+            bool: True if there are pre-instantiated models, False otherwise.
+        """
+        for model_cfg in self._models.values():
+            if isinstance(model_cfg, nn.Module):
+                return True
+        return False
 
     @property
     def has_pretrained(self) -> bool:
@@ -67,6 +111,16 @@ class BaseModelPool(
             bool: True if a pretrained model is available, False otherwise.
         """
         return "_pretrained_" in self._models
+
+    @property
+    def has_merged(self) -> bool:
+        """
+        Check if the model pool contains a merged model.
+
+        Returns:
+            bool: True if a merged model is available, False otherwise.
+        """
+        return "_merged_" in self._models
 
     @property
     def all_model_names(self) -> List[str]:
@@ -140,7 +194,9 @@ class BaseModelPool(
         """
         return model_name.startswith("_") and model_name.endswith("_")
 
-    def get_model_config(self, model_name: str, return_copy: bool = True) -> DictConfig:
+    def get_model_config(
+        self, model_name: str, return_copy: bool = True
+    ) -> Union[DictConfig, str, Any]:
         """
         Get the configuration for the specified model.
 
@@ -148,10 +204,36 @@ class BaseModelPool(
             model_name (str): The name of the model.
 
         Returns:
-            DictConfig: The configuration for the specified model.
+            Union[DictConfig, str, Any]: The configuration for the specified model, which may be a DictConfig, string path, or other type.
+
+        Raises:
+            ValidationError: If model_name is invalid.
+            KeyError: If model_name is not found in the pool.
         """
+        # Validate model name
+        validate_model_name(model_name, allow_special=True)
+
+        # raise friendly error if model not found in the pool
+        if model_name not in self._models:
+            available_models = list(self._models.keys())
+            raise KeyError(
+                f"Model '{model_name}' not found in model pool. "
+                f"Available models: {available_models}"
+            )
+
         model_config = self._models[model_name]
+        if isinstance(model_config, nn.Module):
+            log.warning(
+                f"Model configuration for '{model_name}' is a pre-instantiated model. "
+                "Returning the model instance instead of configuration."
+            )
+
         if return_copy:
+            if isinstance(model_config, nn.Module):
+                # raise performance warning
+                log.warning(
+                    f"Furthermore, returning a copy of the pre-instantiated model '{model_name}' may be inefficient."
+                )
             model_config = deepcopy(model_config)
         return model_config
 
@@ -164,12 +246,28 @@ class BaseModelPool(
 
         Returns:
             str: The path for the specified model.
+
+        Raises:
+            ValidationError: If model_name is invalid.
+            KeyError: If model_name is not found in the pool.
+            ValueError: If model configuration is not a string path.
         """
+        # Validate model name
+        validate_model_name(model_name, allow_special=True)
+
+        if model_name not in self._models:
+            available_models = list(self._models.keys())
+            raise KeyError(
+                f"Model '{model_name}' not found in model pool. "
+                f"Available models: {available_models}"
+            )
+
         if isinstance(self._models[model_name], str):
             return self._models[model_name]
         else:
             raise ValueError(
-                "Model path is not a string. Try to override this method in derived modelpool class."
+                f"Model configuration for '{model_name}' is not a string path. "
+                "Try to override this method in derived modelpool class."
             )
 
     def load_model(
@@ -234,6 +332,40 @@ class BaseModelPool(
                 f"Expected str or DictConfig."
             )
 
+    def add_model(
+        self, model_name: str, model_or_config: Union[nn.Module, DictConfig, str]
+    ):
+        """
+        Add a model to the model pool.
+
+        Args:
+            model_name (str): The name of the model to add.
+            model_or_config (Union[nn.Module, DictConfig, str]): The model instance or configuration to add.
+
+        Raises:
+            ValidationError: If model_name is invalid or already exists in the pool.
+        """
+        validate_model_name(model_name, allow_special=True)
+
+        if model_name in self._models:
+            raise ValidationError(
+                f"Model name '{model_name}' already exists in the pool. "
+                f"Existing models: {list(self._models.keys())}"
+            )
+
+        try:
+            self._models[model_name] = model_or_config
+        except UnsupportedValueType as e:
+            # convert to dict if it's a dataclass or other unsupported type
+            log.warning(
+                f"Model configuration for '{model_name}' is of unsupported type {type(model_or_config)}. "
+                "Attempting to convert to dict."
+            )
+            self._models = OmegaConf.to_container(self._models, resolve=True)
+            self._models[model_name] = model_or_config
+
+        log.debug(f"Added model '{model_name}' to the pool.")
+
     def load_pretrained_model(self, *args, **kwargs):
         assert (
             self.has_pretrained
@@ -261,6 +393,21 @@ class BaseModelPool(
     def named_models(self) -> Generator[Tuple[str, nn.Module], None, None]:
         for model_name in self.model_names:
             yield model_name, self.load_model(model_name)
+
+    def load_pretrained_model_and_task_vectors(
+        self,
+    ) -> Tuple[TorchModelType, List[StateDictType]]:
+        pretrained_model = self.load_pretrained_model()
+
+        task_vectors = []
+        for model_name in self.model_names:
+            finetuned_model = self.load_model(model_name)
+            task_vector = state_dict_sub(
+                finetuned_model.state_dict(), pretrained_model.state_dict()
+            )
+            task_vectors.append(task_vector)
+
+        return pretrained_model, task_vectors
 
     @property
     def has_train_dataset(self) -> bool:
@@ -350,3 +497,25 @@ class BaseModelPool(
         """
         with timeit_context(f"Saving the state dict of model to {path}"):
             torch.save(model.state_dict(), path)
+
+    def __contains__(self, model_name: str) -> bool:
+        """
+        Check if a model with the given name exists in the model pool.
+
+        Examples:
+            >>> modelpool = BaseModelPool(models={"modelA": ..., "modelB": ...})
+            >>> "modelA" in modelpool
+            True
+            >>> "modelC" in modelpool
+            False
+
+        Args:
+            model_name (str): The name of the model to check.
+
+        Returns:
+            bool: True if the model exists, False otherwise.
+        """
+        if self._models is None:
+            raise RuntimeError("Model pool is not initialized")
+        validate_model_name(model_name, allow_special=True)
+        return model_name in self._models

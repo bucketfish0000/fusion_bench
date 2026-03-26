@@ -55,6 +55,8 @@ _import_structure = {
         "GPT2LayerWiseAdaMergingAlgorithm",
         "LayerWiseAdaMergingForLlamaSFT",
         "FlanT5LayerWiseAdaMergingAlgorithm",
+        "ResNetLayerWiseAdamerging",
+        "ResNetTaskWiseAdamerging",
     ],
     "pwe_moe": [
         "PWEMoELinearScalarizationForCLIP",
@@ -70,6 +72,7 @@ _import_structure = {
         "IsotropicMergingInCommonSubspace",
     ],
     "opcm": ["OPCMForCLIP"],
+    "dop": ["ContinualDOPForCLIP"],
     "gossip": [
         "CLIPLayerWiseGossipAlgorithm",
         "CLIPTaskWiseGossipAlgorithm",
@@ -141,7 +144,15 @@ _extra_objects = {
 
 if TYPE_CHECKING:
     from .ada_svd import AdaSVDMergingForCLIPVisionModel
-    from .adamerging import *
+    from .adamerging import (
+        CLIPLayerWiseAdaMergingAlgorithm,
+        CLIPTaskWiseAdaMergingAlgorithm,
+        FlanT5LayerWiseAdaMergingAlgorithm,
+        GPT2LayerWiseAdaMergingAlgorithm,
+        LayerWiseAdaMergingForLlamaSFT,
+        ResNetLayerWiseAdamerging,
+        ResNetTaskWiseAdamerging,
+    )
     from .analysis import TaskVectorCosSimilarity, TaskVectorViolinPlot
     from .base_algorithm import BaseAlgorithm, BaseModelFusionAlgorithm
     from .bitdelta import BitDeltaAlgorithm
@@ -164,6 +175,7 @@ if TYPE_CHECKING:
     from .dawe import DataAdaptiveWeightEnsemblingForCLIP
     from .depth_upscaling import DepthUpscalingAlgorithm, DepthUpscalingForLlama
     from .doge_ta import DOGE_TA_Algorithm
+    from .dop import ContinualDOPForCLIP
     from .dummy import DummyAlgorithm
     from .ensemble import (
         MaxModelPredictorAlgorithm,
