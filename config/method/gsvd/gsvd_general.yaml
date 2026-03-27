@@ -1,0 +1,19 @@
+# =============================================================================
+# FusionBench Method Configuration: GSVD Continual Merging (General)
+# =============================================================================
+# Architecture-agnostic continual GSVD config. Intended to be used with the
+# same experiment structure as `dop/dop_general` and `opcm/opcm_general`.
+# =============================================================================
+_target_: fusion_bench.method.gsvd.gsvd.GSVDMerging
+
+# GSVD merge controls
+fairness: 0.5
+prune_policy: SVD
+preserve_portion: 0.8
+non_matrix_policy: pretrain
+
+# continual merging controls
+shuffle_order: true
+seed: null
+save_on_every_step: false
+evaluate_on_every_step: true

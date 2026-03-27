@@ -1,0 +1,20 @@
+# =============================================================================
+# FusionBench Method Configuration: GSVD Continual Merging
+# =============================================================================
+# Sequentially merges one new model into the running merged model at each step.
+# Designed to plug into the same CLIP modelpool/taskpool combinations used by
+# DOP and OPCM experiments.
+# =============================================================================
+_target_: fusion_bench.method.gsvd.gsvd.GSVDMerging
+
+# GSVD merge controls
+fairness: 0.5
+prune_policy: SVD
+preserve_portion: 0.8
+non_matrix_policy: pretrain
+
+# continual merging controls
+shuffle_order: true
+seed: null
+save_on_every_step: false
+evaluate_on_every_step: true

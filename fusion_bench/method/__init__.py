@@ -79,6 +79,7 @@ _import_structure = {
         "FlanT5LayerWiseGossipAlgorithm",
     ],
     "fw_merging": ["FrankWolfeHardAlgorithm", "FrankWolfeSoftAlgorithm"],
+    "gsvd": ["GSVDMerging"],
     "tall_mask": ["TallMaskTaskArithmeticAlgorithm"],
     "model_stock": ["ModelStock"],
     "wudi": ["wudi_merging", "WUDIMerging"],
