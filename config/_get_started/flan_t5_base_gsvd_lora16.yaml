@@ -1,0 +1,21 @@
+defaults:
+  - /hydra: default
+  - /fabric: auto
+  - /path: default
+  - /method: gsvd/gsvd_general
+  - /modelpool: Seq2SeqLMPool/flan-t5-base_glue_lora16
+  - /taskpool: flan-t5_glue_text_generation
+  - _self_
+
+_target_: fusion_bench.programs.FabricModelFusionProgram
+_recursive_: false
+
+seed: null
+fast_dev_run: false
+dry_run: false
+print_config: true
+print_function_call: true
+
+merged_model_save_path: null
+merged_model_save_kwargs: null
+report_save_path: ${path.log_dir}/program_report.json
